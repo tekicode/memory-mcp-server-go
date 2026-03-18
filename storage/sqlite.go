@@ -73,6 +73,15 @@ func (s *SQLiteStorage) Initialize() error {
 		// Log warning but don't fail initialization
 		// Silently fallback - don't print to stdout in MCP mode
 		// FTS5 is optional, basic search will work fine
+	} else {
+		// Populate FTS tables with any existing data.
+		// This handles both fresh databases and databases that were migrated
+		// (migrateSchema drops old content-sync observations_fts, issue #5).
+		if rebuildErr := s.rebuildFTSIndex(); rebuildErr != nil {
+			// FTS population failed — search will fallback to LIKE-based queries.
+			// Don't fail initialization since FTS is optional.
+			_ = rebuildErr
+		}
 	}
 
 	// Open a separate read connection pool to leverage WAL concurrency
@@ -169,6 +178,20 @@ func (s *SQLiteStorage) migrateSchema() error {
 				return fmt.Errorf("migration failed (%s): %w", m, err)
 			}
 		}
+	}
+
+	// Drop old content-sync observations_fts and its triggers (issue #5).
+	// observations_fts used content='observations' which corrupts the index
+	// on rebuild because entity_name is JOIN-derived and can't map positionally.
+	// createFTSSchema() will recreate it as a standalone FTS table.
+	ftsMigrations := []string{
+		"DROP TRIGGER IF EXISTS observations_fts_insert",
+		"DROP TRIGGER IF EXISTS observations_fts_delete",
+		"DROP TRIGGER IF EXISTS observations_fts_update",
+		"DROP TABLE IF EXISTS observations_fts",
+	}
+	for _, m := range ftsMigrations {
+		s.db.Exec(m)
 	}
 
 	// Create synonyms table for query expansion
