@@ -598,7 +598,7 @@ func (s *SQLiteStorage) readGraphFull() (*KnowledgeGraph, error) {
 	// Load entities with observations
 	rows, err := s.rdb().Query(`
 		SELECT e.name, e.entity_type,
-		       GROUP_CONCAT(o.content, '|||') as observations
+		       GROUP_CONCAT(o.content, char(31)) as observations
 		FROM entities e
 		LEFT JOIN observations o ON e.id = o.entity_id
 		GROUP BY e.id, e.name, e.entity_type
@@ -624,7 +624,7 @@ func (s *SQLiteStorage) readGraphFull() (*KnowledgeGraph, error) {
 		}
 
 		if obsStr.Valid && obsStr.String != "" {
-			entity.Observations = strings.Split(obsStr.String, "|||")
+			entity.Observations = strings.Split(obsStr.String, "\x1f")
 		}
 
 		graph.Entities = append(graph.Entities, entity)
