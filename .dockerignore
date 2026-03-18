@@ -3,4 +3,5 @@
 .git/
 .github/
 .manifest/
+scripts/
 *.md
