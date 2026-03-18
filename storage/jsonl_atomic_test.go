@@ -53,9 +53,9 @@ func TestAtomicWriteNoTruncation(t *testing.T) {
 	}
 }
 
-// TestAtomicWritePreservesDataOnWriteError verifies that if the write process
-// fails (e.g., rename fails), the original file is not corrupted.
-func TestAtomicWritePreservesDataOnWriteError(t *testing.T) {
+// TestAtomicWriteMultiWriteConsistency verifies that successive writes
+// produce a consistent file with all data present.
+func TestAtomicWriteMultiWriteConsistency(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "atomic_preserve_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -169,12 +169,10 @@ func TestSaveGraphAtomicPattern(t *testing.T) {
 	}
 }
 
-// TestMarshalErrorPropagation verifies that saveGraph returns an error when
-// json.Marshal fails, instead of silently dropping the entity.
-// Note: json.Marshal on standard Go structs with string fields won't normally
-// fail, but we verify the error path exists by checking that all entities
-// written are present in the output (no silent drops).
-func TestMarshalErrorEntityCount(t *testing.T) {
+// TestSaveGraphEntityCountPreservation verifies that saveGraph persists all
+// entities and relations without silently dropping any. This validates the
+// behavioral change from continue-on-error to return-on-error in marshal paths.
+func TestSaveGraphEntityCountPreservation(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "marshal_error_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)

@@ -32,7 +32,11 @@ func (j *JSONLStorage) Initialize() error {
 	// Clean up stale temp file from a previous crashed write
 	tmpPath := j.config.FilePath + ".tmp"
 	if _, err := os.Stat(tmpPath); err == nil {
-		os.Remove(tmpPath)
+		if err := os.Remove(tmpPath); err != nil {
+			return fmt.Errorf("failed to remove stale temp file: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to check temp file: %w", err)
 	}
 
 	// Create file if it doesn't exist
@@ -119,8 +123,10 @@ func (j *JSONLStorage) loadGraph() (*KnowledgeGraph, error) {
 }
 
 // saveGraph saves the knowledge graph to JSONL file using atomic write pattern:
-// write to temp file → fsync → rename. This prevents data corruption if the
-// process crashes mid-write, as the original file is never in a partial state.
+// write to temp file → fsync → rename. This ensures the original file is never
+// left in a partial state during writes. Note: for full POSIX crash durability,
+// an fsync on the parent directory after rename would also be needed; this
+// implementation provides protection against process crashes, not power loss.
 func (j *JSONLStorage) saveGraph(graph *KnowledgeGraph) error {
 	var lines []string
 
@@ -162,7 +168,7 @@ func (j *JSONLStorage) saveGraph(graph *KnowledgeGraph) error {
 
 	// Atomic write: temp file in same directory → fsync → rename
 	tmpPath := j.config.FilePath + ".tmp"
-	f, err := os.Create(tmpPath)
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
