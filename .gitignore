@@ -55,6 +55,8 @@ Thumbs.db
 # AI rules and personal files
 .rules
 .claude/
+.manifest/
+scripts/mms-wt
 .cache
 CLAUDE.md
 AGENTS.md
