@@ -39,14 +39,19 @@ func withLogging(logger *slog.Logger, name string, handler ToolHandler) ToolHand
 		duration := time.Since(start)
 
 		if err != nil {
-			logger.LogAttrs(ctx, slog.LevelError, name,
-				slog.Duration("duration", duration),
-				slog.String("error", err.Error()),
-			)
+			var attrs []slog.Attr
+			if pe, ok := toolParamExtractors[name]; ok {
+				attrs = append(attrs, pe(request.GetArguments())...)
+			}
+			attrs = append(attrs, slog.Duration("duration", duration), slog.Any("error", err))
+			logger.LogAttrs(ctx, slog.LevelError, name, attrs...)
 			return result, err
 		}
 
 		// INFO: tool name, key params, duration, result summary
+		if !logger.Enabled(ctx, slog.LevelInfo) {
+			return result, nil
+		}
 		var attrs []slog.Attr
 		if pe, ok := toolParamExtractors[name]; ok {
 			attrs = append(attrs, pe(request.GetArguments())...)
@@ -104,7 +109,7 @@ func extractStringSlice(field, label string) paramExtractor {
 						names = append(names, s)
 					}
 				}
-				return []slog.Attr{slog.String(label, fmt.Sprintf("%v", names))}
+				return []slog.Attr{slog.Any(label, names)}
 			}
 		}
 		return nil
@@ -127,7 +132,7 @@ func extractNamesFromObjects(arrayField, nameField, label string) paramExtractor
 						}
 					}
 				}
-				return []slog.Attr{slog.String(label, fmt.Sprintf("%v", names))}
+				return []slog.Attr{slog.Any(label, names)}
 			}
 		}
 		return nil
@@ -264,14 +269,14 @@ func extractReadGraphSummary(result *mcp.CallToolResult) []slog.Attr {
 	var summary struct {
 		TotalEntities int `json:"totalEntities"`
 	}
-	if json.Unmarshal([]byte(text), &summary) == nil && summary.TotalEntities > 0 {
+	if json.Unmarshal([]byte(text), &summary) == nil {
 		return []slog.Attr{slog.Int("entities", summary.TotalEntities)}
 	}
 	// Try full graph format
 	var graph struct {
 		Entities []json.RawMessage `json:"entities"`
 	}
-	if json.Unmarshal([]byte(text), &graph) == nil && len(graph.Entities) > 0 {
+	if json.Unmarshal([]byte(text), &graph) == nil {
 		return []slog.Attr{slog.Int("entities", len(graph.Entities))}
 	}
 	return nil
