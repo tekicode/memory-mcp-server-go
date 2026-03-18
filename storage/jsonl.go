@@ -29,6 +29,16 @@ func (j *JSONLStorage) Initialize() error {
 		}
 	}
 
+	// Clean up stale temp file from a previous crashed write
+	tmpPath := j.config.FilePath + ".tmp"
+	if _, err := os.Stat(tmpPath); err == nil {
+		if err := os.Remove(tmpPath); err != nil {
+			return fmt.Errorf("failed to remove stale temp file: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to check temp file: %w", err)
+	}
+
 	// Create file if it doesn't exist
 	if _, err := os.Stat(j.config.FilePath); os.IsNotExist(err) {
 		file, err := os.Create(j.config.FilePath)
@@ -112,7 +122,11 @@ func (j *JSONLStorage) loadGraph() (*KnowledgeGraph, error) {
 	return graph, nil
 }
 
-// saveGraph saves the knowledge graph to JSONL file
+// saveGraph saves the knowledge graph to JSONL file using atomic write pattern:
+// write to temp file → fsync → rename. This ensures the original file is never
+// left in a partial state during writes. Note: for full POSIX crash durability,
+// an fsync on the parent directory after rename would also be needed; this
+// implementation provides protection against process crashes, not power loss.
 func (j *JSONLStorage) saveGraph(graph *KnowledgeGraph) error {
 	var lines []string
 
@@ -126,7 +140,7 @@ func (j *JSONLStorage) saveGraph(graph *KnowledgeGraph) error {
 		}
 		data, err := json.Marshal(jsonEntity)
 		if err != nil {
-			continue
+			return fmt.Errorf("failed to marshal entity %q: %w", entity.Name, err)
 		}
 		lines = append(lines, string(data))
 	}
@@ -141,18 +155,47 @@ func (j *JSONLStorage) saveGraph(graph *KnowledgeGraph) error {
 		}
 		data, err := json.Marshal(jsonRelation)
 		if err != nil {
-			continue
+			return fmt.Errorf("failed to marshal relation %q->%q: %w", relation.From, relation.To, err)
 		}
 		lines = append(lines, string(data))
 	}
 
-	// Save to file
+	// Build content
 	content := strings.Join(lines, "\n")
 	if len(lines) > 0 {
 		content += "\n"
 	}
 
-	return os.WriteFile(j.config.FilePath, []byte(content), 0644)
+	// Atomic write: temp file in same directory → fsync → rename
+	tmpPath := j.config.FilePath + ".tmp"
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+
+	if _, err := f.WriteString(content); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to write temp file: %w", err)
+	}
+
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to sync temp file: %w", err)
+	}
+
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to close temp file: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, j.config.FilePath); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to rename temp file: %w", err)
+	}
+
+	return nil
 }
 
 // CreateEntities creates new entities
