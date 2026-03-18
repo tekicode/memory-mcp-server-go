@@ -146,6 +146,9 @@ Tests are available in `storage/search_priority_test.go`:
   # Auth & CORS
   --auth-bearer string     Require Bearer token for SSE/HTTP
   --cors-origin string     Allowed CORS origins: '*' for all, or comma-separated list (default "*")
+
+  # Logging
+  --log-level string       Log level: error, info, or debug (default "info")
 ```
 
 ### Storage Type Detection
