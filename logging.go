@@ -265,12 +265,12 @@ func extractAddedObservations(result *mcp.CallToolResult) []slog.Attr {
 
 func extractReadGraphSummary(result *mcp.CallToolResult) []slog.Attr {
 	text := resultText(result)
-	// Try summary format (has totalEntities field)
+	// Try summary format (uses pointer to distinguish present-but-zero from absent)
 	var summary struct {
-		TotalEntities int `json:"totalEntities"`
+		TotalEntities *int `json:"totalEntities"`
 	}
-	if json.Unmarshal([]byte(text), &summary) == nil {
-		return []slog.Attr{slog.Int("entities", summary.TotalEntities)}
+	if json.Unmarshal([]byte(text), &summary) == nil && summary.TotalEntities != nil {
+		return []slog.Attr{slog.Int("entities", *summary.TotalEntities)}
 	}
 	// Try full graph format
 	var graph struct {
