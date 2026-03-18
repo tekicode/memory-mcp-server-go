@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -19,7 +20,7 @@ func newTestSQLiteStorage(t *testing.T) *SQLiteStorage {
 		FilePath:    filepath.Join(tempDir, "test.db"),
 		WALMode:     true,
 		CacheSize:   1000,
-		BusyTimeout: 5000,
+		BusyTimeout: 5 * time.Second,
 	}
 	s, err := NewSQLiteStorage(config)
 	if err != nil {
@@ -143,7 +144,9 @@ func TestFTSRebuildDoesNotCorruptWithIntegerIDs(t *testing.T) {
 	seedTestEntities(t, s)
 
 	// Clear and rebuild
-	s.db.Exec("DELETE FROM observations_fts")
+	if _, err := s.db.Exec("DELETE FROM observations_fts"); err != nil {
+		t.Fatalf("Failed to clear observations_fts: %v", err)
+	}
 	if err := s.rebuildFTSIndex(); err != nil {
 		t.Fatalf("rebuildFTSIndex failed: %v", err)
 	}
@@ -318,7 +321,7 @@ func TestFTSExistingSearchPriorityUnchanged(t *testing.T) {
 		FilePath:    filepath.Join(tempDir, "test.db"),
 		WALMode:     true,
 		CacheSize:   1000,
-		BusyTimeout: 5000,
+		BusyTimeout: 5 * time.Second,
 	}
 	storage, err := NewSQLiteStorage(config)
 	if err != nil {
@@ -465,7 +468,7 @@ func TestFTSMigrationFromOldSchema(t *testing.T) {
 		FilePath:    dbPath,
 		WALMode:     true,
 		CacheSize:   1000,
-		BusyTimeout: 5000,
+		BusyTimeout: 5 * time.Second,
 	}
 	s, err := NewSQLiteStorage(config)
 	if err != nil {

@@ -92,18 +92,26 @@ func (s *SQLiteStorage) rebuildFTSIndex() error {
 	// observations_fts is a standalone table (no content-sync) because
 	// entity_name is JOIN-derived and can't map positionally from
 	// the observations table (see issue #5).
-	_, err = s.db.Exec("DELETE FROM observations_fts")
+	// Wrapped in a transaction so a failed INSERT doesn't leave the index empty.
+	tx, err := s.db.Begin()
 	if err != nil {
+		return fmt.Errorf("failed to begin observations FTS rebuild transaction: %w", err)
+	}
+	if _, err = tx.Exec("DELETE FROM observations_fts"); err != nil {
+		tx.Rollback()
 		return fmt.Errorf("failed to clear observations FTS: %w", err)
 	}
-	_, err = s.db.Exec(`
+	if _, err = tx.Exec(`
 		INSERT INTO observations_fts(rowid, content, entity_name)
 		SELECT o.id, o.content, e.name
 		FROM observations o
 		JOIN entities e ON o.entity_id = e.id
-	`)
-	if err != nil {
+	`); err != nil {
+		tx.Rollback()
 		return fmt.Errorf("failed to rebuild observations FTS: %w", err)
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit observations FTS rebuild: %w", err)
 	}
 
 	return nil

@@ -80,7 +80,6 @@ func (s *SQLiteStorage) Initialize() error {
 		if rebuildErr := s.rebuildFTSIndex(); rebuildErr != nil {
 			// FTS population failed — search will fallback to LIKE-based queries.
 			// Don't fail initialization since FTS is optional.
-			_ = rebuildErr
 		}
 	}
 
@@ -191,7 +190,9 @@ func (s *SQLiteStorage) migrateSchema() error {
 		"DROP TABLE IF EXISTS observations_fts",
 	}
 	for _, m := range ftsMigrations {
-		s.db.Exec(m)
+		if _, err := s.db.Exec(m); err != nil {
+			return fmt.Errorf("FTS migration failed (%s): %w", m, err)
+		}
 	}
 
 	// Create synonyms table for query expansion
