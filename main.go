@@ -1371,7 +1371,7 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		}
 		expectedBytes := []byte("Bearer " + authBearer)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if h := strings.TrimSpace(r.Header.Get("Authorization")); subtle.ConstantTimeCompare([]byte(h), expectedBytes) == 1 {
+			if h := strings.TrimSpace(r.Header.Get("Authorization")); len(h) == len(expectedBytes) && subtle.ConstantTimeCompare([]byte(h), expectedBytes) == 1 {
 				next.ServeHTTP(w, r)
 				return
 			}
