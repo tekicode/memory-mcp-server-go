@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -1370,7 +1371,7 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			expected := "Bearer " + authBearer
-			if h := strings.TrimSpace(r.Header.Get("Authorization")); h == expected {
+			if h := strings.TrimSpace(r.Header.Get("Authorization")); subtle.ConstantTimeCompare([]byte(h), []byte(expected)) == 1 {
 				next.ServeHTTP(w, r)
 				return
 			}
