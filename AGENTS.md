@@ -1,7 +1,8 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `main.go`: Server entry point (MCP transports, CLI flags).
+- `main.go`: Server entry point (MCP transports, CLI flags, tool handlers).
+- `logging.go`: Structured logging middleware and per-tool param/result extractors.
 - `storage/`: Storage interfaces and backends (`sqlite.go`, `jsonl.go`, `migration.go`).
 - `scripts/install.sh`: Cross-platform installer for release binaries.
 - `Makefile`: Standard build, format, verify, and cross-compile targets.

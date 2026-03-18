@@ -130,6 +130,9 @@ mms [options]
 
   CORS:
   --cors-origin string     Allowed CORS origins: '*' for all, or comma-separated list (default "*")
+
+  Logging:
+  --log-level string       Log level: error, info, or debug (default "info")
 ```
 
 Examples:

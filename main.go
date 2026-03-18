@@ -7,7 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -64,13 +64,13 @@ func NewKnowledgeGraphManager(memoryPath string, storageType string, autoMigrate
 		// Check if we need to migrate
 		if _, err := os.Stat(resolvedPath); err == nil {
 			if _, err := os.Stat(finalPath); os.IsNotExist(err) {
-				log.Printf("Performing seamless migration from %s to %s...", resolvedPath, finalPath)
+				slog.Info("performing seamless migration", "from", resolvedPath, "to", finalPath)
 				if err := performSeamlessMigration(resolvedPath, finalPath); err != nil {
-					log.Printf("Migration failed, falling back to JSONL: %v", err)
+					slog.Error("migration failed, falling back to JSONL", "error", err)
 					storageType = "jsonl"
 					finalPath = resolvedPath
 				} else {
-					log.Printf("Migration completed successfully! Now using SQLite for better performance.")
+					slog.Info("migration completed successfully, now using SQLite")
 				}
 			}
 		}
@@ -149,14 +149,14 @@ func detectStorageType(memoryPath string, autoMigrate bool) (storageType string,
 
 	// Check if SQLite database already exists
 	if _, err := os.Stat(sqlitePath); err == nil {
-		log.Printf("Found existing SQLite database: %s", sqlitePath)
+		slog.Info("found existing SQLite database", "path", sqlitePath)
 		return "sqlite", sqlitePath
 	}
 
 	// If auto-migrate is enabled and JSONL file exists, migrate to SQLite
 	if autoMigrate {
 		if _, err := os.Stat(memoryPath); err == nil {
-			log.Printf("Auto-migrating %s to SQLite for better performance...", memoryPath)
+			slog.Info("auto-migrating to SQLite", "source", memoryPath)
 			return "sqlite", sqlitePath // Return SQLite path for migration
 		}
 	}
@@ -173,7 +173,7 @@ func performSeamlessMigration(jsonlPath, sqlitePath string) error {
 	// Only show important progress, not every step
 	migrator.SetProgressCallback(func(current, total int, message string) {
 		if current == 30 || current == 90 || current == 100 {
-			log.Printf("Migration progress: %s", message)
+			slog.Info("migration progress", "status", message)
 		}
 	})
 
@@ -183,8 +183,7 @@ func performSeamlessMigration(jsonlPath, sqlitePath string) error {
 	}
 
 	if result.Success {
-		log.Printf("Successfully migrated %d entities and %d relations",
-			result.EntitiesCount, result.RelationsCount)
+		slog.Info("migration complete", "entities", result.EntitiesCount, "relations", result.RelationsCount)
 	}
 
 	return nil
@@ -364,6 +363,10 @@ func main() {
 	// CORS flags
 	flag.StringVar(&corsOrigin, "cors-origin", "*", "Allowed CORS origins: '*' for all, or comma-separated list")
 
+	// Logging flags
+	var logLevel string
+	flag.StringVar(&logLevel, "log-level", "info", "Log level (error, info, debug)")
+
 	flag.Parse()
 
 	// Parse CORS origins
@@ -377,13 +380,18 @@ func main() {
 		}
 	}
 
-	// In stdio mode, ensure logging doesn't interfere with MCP JSON-RPC
+	// Configure structured logging
+	slogLevel, err := parseLogLevel(logLevel)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slogLevel}))
+	slog.SetDefault(logger)
+
+	// In stdio mode, track transport for any runtime decisions
 	if transport == "stdio" {
-		// Set environment variable to track stdio mode for suppressing logs
 		os.Setenv("MCP_TRANSPORT", "stdio")
-		// Log output already goes to stderr by default, which is fine
-		// But we should suppress non-critical logging in stdio mode
-		log.SetOutput(os.Stderr)
 	}
 
 	// Handle version flag
@@ -413,7 +421,8 @@ func main() {
 		}
 
 		if err := storage.ExecuteMigration(cmd); err != nil {
-			log.Fatalf("Migration failed: %v", err)
+			slog.Error("migration failed", "error", err)
+			os.Exit(1)
 		}
 
 		os.Exit(0)
@@ -422,7 +431,8 @@ func main() {
 	// Create knowledge graph manager
 	manager, err := NewKnowledgeGraphManager(memory, storageType, autoMigrate)
 	if err != nil {
-		log.Fatalf("Failed to create knowledge graph manager: %v", err)
+		slog.Error("failed to create knowledge graph manager", "error", err)
+		os.Exit(1)
 	}
 	defer manager.Close()
 
@@ -1033,7 +1043,7 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 	)
 
 	// Add handlers
-	s.AddTool(createEntitiesTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	s.AddTool(createEntitiesTool, withLogging(logger, "create_entities", func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		// Bind arguments using new mcp-go helpers
 		var arg struct {
 			Entities []storage.Entity `json:"entities"`
@@ -1058,9 +1068,9 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		}
 
 		return mcp.NewToolResultText(string(resultJSON)), nil
-	})
+	}))
 
-	s.AddTool(createRelationsTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	s.AddTool(createRelationsTool, withLogging(logger, "create_relations", func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var arg struct {
 			Relations []storage.Relation `json:"relations"`
 		}
@@ -1084,9 +1094,9 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		}
 
 		return mcp.NewToolResultText(string(resultJSON)), nil
-	})
+	}))
 
-	s.AddTool(addObservationsTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	s.AddTool(addObservationsTool, withLogging(logger, "add_observations", func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var arg struct {
 			Observations []ObservationAddition `json:"observations"`
 		}
@@ -1110,9 +1120,9 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		}
 
 		return mcp.NewToolResultText(string(resultJSON)), nil
-	})
+	}))
 
-	s.AddTool(deleteEntitiesTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	s.AddTool(deleteEntitiesTool, withLogging(logger, "delete_entities", func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var arg struct {
 			EntityNames []string `json:"entityNames"`
 		}
@@ -1129,9 +1139,9 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		}
 
 		return mcp.NewToolResultText("Entities deleted successfully"), nil
-	})
+	}))
 
-	s.AddTool(deleteObservationsTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	s.AddTool(deleteObservationsTool, withLogging(logger, "delete_observations", func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var arg struct {
 			Deletions []storage.ObservationDeletion `json:"deletions"`
 		}
@@ -1148,9 +1158,9 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		}
 
 		return mcp.NewToolResultText("Observations deleted successfully"), nil
-	})
+	}))
 
-	s.AddTool(deleteRelationsTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	s.AddTool(deleteRelationsTool, withLogging(logger, "delete_relations", func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var arg struct {
 			Relations []storage.Relation `json:"relations"`
 		}
@@ -1167,9 +1177,9 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		}
 
 		return mcp.NewToolResultText("Relations deleted successfully"), nil
-	})
+	}))
 
-	s.AddTool(readGraphTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	s.AddTool(readGraphTool, withLogging(logger, "read_graph", func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var arg struct {
 			Mode  *string `json:"mode"`
 			Limit *int    `json:"limit"`
@@ -1209,9 +1219,9 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		}
 
 		return mcp.NewToolResultText(string(resultJSON)), nil
-	})
+	}))
 
-	s.AddTool(searchNodesTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	s.AddTool(searchNodesTool, withLogging(logger, "search_nodes", func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var arg struct {
 			Query string `json:"query"`
 			Limit *int   `json:"limit"`
@@ -1246,9 +1256,9 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		}
 
 		return mcp.NewToolResultText(string(resultJSON)), nil
-	})
+	}))
 
-	s.AddTool(openNodesTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	s.AddTool(openNodesTool, withLogging(logger, "open_nodes", func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var arg struct {
 			Names []string `json:"names"`
 		}
@@ -1272,9 +1282,9 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		}
 
 		return mcp.NewToolResultText(string(resultJSON)), nil
-	})
+	}))
 
-	s.AddTool(mergeEntitiesTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	s.AddTool(mergeEntitiesTool, withLogging(logger, "merge_entities", func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var arg struct {
 			SourceName string `json:"sourceName"`
 			TargetName string `json:"targetName"`
@@ -1296,9 +1306,9 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 			return nil, err
 		}
 		return mcp.NewToolResultText(string(resultJSON)), nil
-	})
+	}))
 
-	s.AddTool(updateEntitiesTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	s.AddTool(updateEntitiesTool, withLogging(logger, "update_entities", func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var arg struct {
 			Name       string `json:"name"`
 			EntityType string `json:"entityType"`
@@ -1314,9 +1324,9 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 			return nil, err
 		}
 		return mcp.NewToolResultText(fmt.Sprintf("Entity %q type updated to %q", arg.Name, arg.EntityType)), nil
-	})
+	}))
 
-	s.AddTool(updateObservationsTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	s.AddTool(updateObservationsTool, withLogging(logger, "update_observations", func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var arg struct {
 			EntityName string `json:"entityName"`
 			OldContent string `json:"oldContent"`
@@ -1333,9 +1343,9 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 			return nil, err
 		}
 		return mcp.NewToolResultText("Observation updated successfully"), nil
-	})
+	}))
 
-	s.AddTool(detectConflictsTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	s.AddTool(detectConflictsTool, withLogging(logger, "detect_conflicts", func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var arg struct {
 			EntityName *string `json:"entityName"`
 		}
@@ -1354,7 +1364,7 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		}
 
 		if len(conflicts) == 0 {
-			return mcp.NewToolResultText("No conflicts detected"), nil
+			return mcp.NewToolResultText(noConflictsMessage), nil
 		}
 
 		resultJSON, err := json.MarshalIndent(conflicts, "", "  ")
@@ -1362,7 +1372,7 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 			return nil, err
 		}
 		return mcp.NewToolResultText(string(resultJSON)), nil
-	})
+	}))
 
 	// Shared auth middleware for SSE/HTTP transports
 	authWrap := func(next http.Handler) http.Handler {
@@ -1443,7 +1453,7 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		mux.Handle("/sse", corsWrap(authWrap(sseServer.SSEHandler())))
 		mux.Handle("/message", corsWrap(authWrap(sseServer.MessageHandler())))
 
-		log.Printf("SSE listening on :%d\n", port)
+		slog.Info("SSE listening", "port", port)
 		// Start in background and handle graceful shutdown
 		errCh := make(chan error, 1)
 		go func() { errCh <- sseServer.Start(fmt.Sprintf(":%d", port)) }()
@@ -1452,15 +1462,16 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		select {
 		case sig := <-sigCh:
-			log.Printf("Received %s, shutting down SSE...", sig)
+			slog.Info("shutting down SSE", "signal", sig)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := sseServer.Shutdown(ctx); err != nil {
-				log.Printf("SSE shutdown error: %v", err)
+				slog.Error("SSE shutdown error", "error", err)
 			}
 		case err := <-errCh:
 			if err != nil {
-				log.Fatalf("SSE server error: %v", err)
+				slog.Error("SSE server error", "error", err)
+				os.Exit(1)
 			}
 		}
 	case "http", "streamable-http":
@@ -1483,7 +1494,7 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		streamSrv := server.NewStreamableHTTPServer(s, append(httpOpts, server.WithStreamableHTTPServer(customSrv))...)
 		mux.Handle(httpEndpoint, corsWrap(authWrap(streamSrv)))
 
-		log.Printf("Streamable HTTP listening on http://localhost:%d%s\n", port, httpEndpoint)
+		slog.Info("Streamable HTTP listening", "port", port, "endpoint", httpEndpoint)
 
 		// Start in background and handle graceful shutdown
 		errCh := make(chan error, 1)
@@ -1492,18 +1503,20 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		select {
 		case sig := <-sigCh:
-			log.Printf("Received %s, shutting down HTTP...", sig)
+			slog.Info("shutting down HTTP", "signal", sig)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := streamSrv.Shutdown(ctx); err != nil {
-				log.Printf("HTTP shutdown error: %v", err)
+				slog.Error("HTTP shutdown error", "error", err)
 			}
 		case err := <-errCh:
 			if err != nil {
-				log.Fatalf("HTTP server error: %v", err)
+				slog.Error("HTTP server error", "error", err)
+				os.Exit(1)
 			}
 		}
 	default:
-		log.Fatalf("Invalid transport: %s", transport)
+		slog.Error("invalid transport", "transport", transport)
+		os.Exit(1)
 	}
 }
