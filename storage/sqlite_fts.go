@@ -24,12 +24,12 @@ func (s *SQLiteStorage) createFTSSchema() error {
 		tokenize='porter unicode61 remove_diacritics 1'
 	);
 
-	-- FTS5 virtual table for observation search
+	-- FTS5 virtual table for observation search (standalone — no content-sync)
+	-- entity_name is JOIN-derived and cannot map positionally from observations table,
+	-- so content-sync would corrupt the index on rebuild (see issue #5).
 	CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
 		content,
 		entity_name,
-		content='observations',
-		content_rowid='id',
 		tokenize='porter unicode61 remove_diacritics 1'
 	);
 
@@ -53,14 +53,12 @@ func (s *SQLiteStorage) createFTSSchema() error {
 	END;
 
 	CREATE TRIGGER IF NOT EXISTS observations_fts_delete AFTER DELETE ON observations BEGIN
-		INSERT INTO observations_fts(observations_fts, rowid, content, entity_name) 
-		SELECT 'delete', old.id, old.content, e.name FROM entities e WHERE e.id = old.entity_id;
+		DELETE FROM observations_fts WHERE rowid = old.id;
 	END;
 
 	CREATE TRIGGER IF NOT EXISTS observations_fts_update AFTER UPDATE ON observations BEGIN
-		INSERT INTO observations_fts(observations_fts, rowid, content, entity_name) 
-		SELECT 'delete', old.id, old.content, e.name FROM entities e WHERE e.id = old.entity_id;
-		INSERT INTO observations_fts(rowid, content, entity_name) 
+		DELETE FROM observations_fts WHERE rowid = old.id;
+		INSERT INTO observations_fts(rowid, content, entity_name)
 		SELECT new.id, new.content, e.name FROM entities e WHERE e.id = new.entity_id;
 	END;
 	`
@@ -90,20 +88,29 @@ func (s *SQLiteStorage) rebuildFTSIndex() error {
 		}
 	}
 
-	// Populate observations FTS manually
-	_, err = s.db.Exec(`
+	// Rebuild observations FTS: delete all then re-insert with JOIN.
+	// observations_fts is a standalone table (no content-sync) because
+	// entity_name is JOIN-derived and can't map positionally from
+	// the observations table (see issue #5).
+	// Wrapped in a transaction so a failed INSERT doesn't leave the index empty.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin observations FTS rebuild transaction: %w", err)
+	}
+	defer tx.Rollback() // no-op after successful Commit
+	if _, err = tx.Exec("DELETE FROM observations_fts"); err != nil {
+		return fmt.Errorf("failed to clear observations FTS: %w", err)
+	}
+	if _, err = tx.Exec(`
 		INSERT INTO observations_fts(rowid, content, entity_name)
-		SELECT o.id, o.content, e.name 
+		SELECT o.id, o.content, e.name
 		FROM observations o
 		JOIN entities e ON o.entity_id = e.id
-		WHERE o.id NOT IN (SELECT rowid FROM observations_fts)
-	`)
-	if err != nil {
-		// Try rebuild if manual insert fails
-		_, err = s.db.Exec("INSERT INTO observations_fts(observations_fts) VALUES('rebuild')")
-		if err != nil {
-			return fmt.Errorf("failed to rebuild observations FTS: %w", err)
-		}
+	`); err != nil {
+		return fmt.Errorf("failed to rebuild observations FTS: %w", err)
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit observations FTS rebuild: %w", err)
 	}
 
 	return nil
@@ -143,9 +150,9 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string, limit int) (*SearchResu
 
 	// Search entities using FTS (matches in name or entity_type)
 	entityQuery := `
-		SELECT DISTINCT e.id, e.name, e.entity_type, bm25(ef) as rank
-		FROM entities_fts ef
-		JOIN entities e ON ef.rowid = e.id
+		SELECT DISTINCT e.id, e.name, e.entity_type, bm25(entities_fts) as rank
+		FROM entities_fts
+		JOIN entities e ON entities_fts.rowid = e.id
 		WHERE entities_fts MATCH ?
 		ORDER BY rank
 	`
@@ -180,9 +187,9 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string, limit int) (*SearchResu
 
 	// Search observations using FTS (matches in observation content)
 	obsQuery := `
-		SELECT DISTINCT e.id, e.name, e.entity_type, bm25(of) as rank
-		FROM observations_fts of
-		JOIN observations o ON of.rowid = o.id
+		SELECT DISTINCT e.id, e.name, e.entity_type, bm25(observations_fts) as rank
+		FROM observations_fts
+		JOIN observations o ON observations_fts.rowid = o.id
 		JOIN entities e ON o.entity_id = e.id
 		WHERE observations_fts MATCH ?
 		ORDER BY rank
