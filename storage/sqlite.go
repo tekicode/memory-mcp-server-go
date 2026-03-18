@@ -8,6 +8,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// observationSep is the delimiter used by GROUP_CONCAT and strings.Split
+// for round-tripping observation lists through a single SQL column.
+const observationSep = "\x1f" // ASCII Unit Separator
+
 // SQLiteStorage implements Storage interface using SQLite
 type SQLiteStorage struct {
 	db     *sql.DB // write connection (single conn)
@@ -598,12 +602,12 @@ func (s *SQLiteStorage) readGraphFull() (*KnowledgeGraph, error) {
 	// Load entities with observations
 	rows, err := s.rdb().Query(`
 		SELECT e.name, e.entity_type,
-		       GROUP_CONCAT(o.content, char(31)) as observations
+		       GROUP_CONCAT(o.content, ?) as observations
 		FROM entities e
 		LEFT JOIN observations o ON e.id = o.entity_id
 		GROUP BY e.id, e.name, e.entity_type
 		ORDER BY e.created_at
-	`)
+	`, observationSep)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query entities: %w", err)
 	}
@@ -624,7 +628,7 @@ func (s *SQLiteStorage) readGraphFull() (*KnowledgeGraph, error) {
 		}
 
 		if obsStr.Valid && obsStr.String != "" {
-			entity.Observations = strings.Split(obsStr.String, "\x1f")
+			entity.Observations = strings.Split(obsStr.String, observationSep)
 		}
 
 		graph.Entities = append(graph.Entities, entity)
