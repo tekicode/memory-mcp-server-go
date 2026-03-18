@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -160,11 +161,12 @@ func TestFTSRebuildDoesNotCorruptWithIntegerIDs(t *testing.T) {
 		t.Fatalf("Failed to read FTS content: %v", err)
 	}
 
-	// The content should be observation text, not an integer
-	if ftsContent == "1" || ftsContent == "2" || ftsContent == "3" {
-		t.Errorf("FTS content column contains integer '%s' — column mismatch bug is present", ftsContent)
+	// The content should be observation text, not an integer.
+	// If column mismatch exists, entity_id integers leak into the content column.
+	if _, err := strconv.Atoi(ftsContent); err == nil {
+		t.Errorf("FTS content column contains numeric value '%s' — column mismatch bug is present (entity_id leaked into content)", ftsContent)
 	}
-	t.Logf("FTS content column contains: %q (correct)", ftsContent)
+	t.Logf("FTS content column contains: %q (correct — non-numeric text)", ftsContent)
 }
 
 // TestFTSDeleteObservationDirect verifies that deleting an observation

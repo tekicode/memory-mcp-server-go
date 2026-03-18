@@ -97,8 +97,8 @@ func (s *SQLiteStorage) rebuildFTSIndex() error {
 	if err != nil {
 		return fmt.Errorf("failed to begin observations FTS rebuild transaction: %w", err)
 	}
+	defer tx.Rollback() // no-op after successful Commit
 	if _, err = tx.Exec("DELETE FROM observations_fts"); err != nil {
-		tx.Rollback()
 		return fmt.Errorf("failed to clear observations FTS: %w", err)
 	}
 	if _, err = tx.Exec(`
@@ -107,7 +107,6 @@ func (s *SQLiteStorage) rebuildFTSIndex() error {
 		FROM observations o
 		JOIN entities e ON o.entity_id = e.id
 	`); err != nil {
-		tx.Rollback()
 		return fmt.Errorf("failed to rebuild observations FTS: %w", err)
 	}
 	if err = tx.Commit(); err != nil {
