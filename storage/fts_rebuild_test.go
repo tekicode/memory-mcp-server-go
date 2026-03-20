@@ -2,6 +2,7 @@ package storage
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -523,6 +524,143 @@ func TestFTSMigrationFromOldSchema(t *testing.T) {
 	}
 	if strings.Contains(sqlText, "content=") {
 		t.Errorf("Post-migration: observations_fts still has content-sync: %s", sqlText)
+	}
+}
+
+// TestFTSTriggerSurvival verifies that all 6 FTS triggers survive after
+// creating a batch larger than the old batchThreshold (>20 entities).
+//
+// Before fix: CreateEntities drops entities_fts_insert and
+// observations_fts_insert triggers inside the transaction, commits,
+// then recreates them outside — a crash between commit and recreation
+// leaves triggers permanently gone (issue #7).
+// After fix: triggers are never dropped; they fire per-row atomically.
+func TestFTSTriggerSurvival(t *testing.T) {
+	s := newTestSQLiteStorage(t)
+
+	// All 6 FTS triggers that should exist
+	expectedTriggers := []string{
+		"entities_fts_insert",
+		"entities_fts_delete",
+		"entities_fts_update",
+		"observations_fts_insert",
+		"observations_fts_delete",
+		"observations_fts_update",
+	}
+
+	// Verify triggers exist before bulk create
+	for _, name := range expectedTriggers {
+		var count int
+		err := s.db.QueryRow(
+			"SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name=?", name,
+		).Scan(&count)
+		if err != nil || count != 1 {
+			t.Fatalf("Pre-create: trigger %s missing", name)
+		}
+	}
+
+	// Create >20 entities (would have triggered old bulk path)
+	entities := make([]Entity, 25)
+	for i := range entities {
+		entities[i] = Entity{
+			Name:         fmt.Sprintf("BulkEntity%d", i),
+			EntityType:   "TestType",
+			Observations: []string{fmt.Sprintf("observation for entity %d", i)},
+		}
+	}
+	if _, err := s.CreateEntities(entities); err != nil {
+		t.Fatalf("CreateEntities failed: %v", err)
+	}
+
+	// Verify ALL 6 triggers still exist after bulk create
+	for _, name := range expectedTriggers {
+		var count int
+		err := s.db.QueryRow(
+			"SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name=?", name,
+		).Scan(&count)
+		if err != nil {
+			t.Fatalf("Post-create: failed to query trigger %s: %v", name, err)
+		}
+		if count != 1 {
+			t.Errorf("Post-create: trigger %s is missing — crash-safety gap (issue #7)", name)
+		}
+	}
+}
+
+// TestFTSBulkCreateCorrectness verifies that FTS search returns correct
+// results after creating a batch larger than the old batchThreshold (>20).
+// Both entity name matches and observation content matches must work.
+func TestFTSBulkCreateCorrectness(t *testing.T) {
+	s := newTestSQLiteStorage(t)
+
+	// Create >20 entities with searchable observations
+	entities := make([]Entity, 25)
+	for i := range entities {
+		entities[i] = Entity{
+			Name:         fmt.Sprintf("BulkNode%d", i),
+			EntityType:   "TestType",
+			Observations: []string{fmt.Sprintf("unique searchterm%d payload", i)},
+		}
+	}
+	if _, err := s.CreateEntities(entities); err != nil {
+		t.Fatalf("CreateEntities failed: %v", err)
+	}
+
+	// Search by entity name — should find by name match
+	result, err := s.SearchNodesWithFTS("BulkNode0", 10)
+	if err != nil {
+		t.Fatalf("FTS search by name failed: %v", err)
+	}
+	if result.Total == 0 {
+		t.Fatal("Expected to find BulkNode0 by name, got 0 results")
+	}
+	found := false
+	for _, hit := range result.Entities {
+		if hit.Name == "BulkNode0" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Expected BulkNode0 in results, got: %v", result.Entities)
+	}
+
+	// Search by observation content — should find by content match
+	result, err = s.SearchNodesWithFTS("searchterm15", 10)
+	if err != nil {
+		t.Fatalf("FTS search by content failed: %v", err)
+	}
+	if result.Total == 0 {
+		t.Fatal("Expected to find BulkNode15 via observation 'searchterm15', got 0 results")
+	}
+	found = false
+	for _, hit := range result.Entities {
+		if hit.Name == "BulkNode15" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Expected BulkNode15 in results for 'searchterm15', got: %v", result.Entities)
+	}
+
+	// Verify count — all 25 entities should be in FTS
+	var entityFTSCount int
+	err = s.db.QueryRow("SELECT COUNT(*) FROM entities_fts").Scan(&entityFTSCount)
+	if err != nil {
+		t.Fatalf("Failed to count entities_fts: %v", err)
+	}
+	if entityFTSCount != 25 {
+		t.Errorf("Expected 25 rows in entities_fts, got %d", entityFTSCount)
+	}
+
+	var obsFTSCount int
+	err = s.db.QueryRow("SELECT COUNT(*) FROM observations_fts").Scan(&obsFTSCount)
+	if err != nil {
+		t.Fatalf("Failed to count observations_fts: %v", err)
+	}
+	if obsFTSCount != 25 {
+		t.Errorf("Expected 25 rows in observations_fts, got %d", obsFTSCount)
 	}
 }
 
