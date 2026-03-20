@@ -252,30 +252,20 @@ func (s *SQLiteStorage) rdb() *sql.DB {
 	return s.db
 }
 
-// batchThreshold is the entity count above which bulk optimizations are applied
-const batchThreshold = 20
-
 // CreateEntities creates new entities in the database.
-// For large batches (>20 entities), FTS triggers are temporarily disabled
-// and the FTS index is rebuilt after insertion for better performance.
+// When FTS is available, FTS triggers fire per-row to keep the search
+// index in sync atomically; otherwise only base tables are updated and
+// search falls back to the non-FTS implementation.
 func (s *SQLiteStorage) CreateEntities(entities []Entity) ([]Entity, error) {
 	if len(entities) == 0 {
 		return []Entity{}, nil
 	}
-
-	useBulk := len(entities) > batchThreshold && s.isFTSAvailable()
 
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
-
-	// For large batches, disable FTS triggers during insertion
-	if useBulk {
-		tx.Exec("DROP TRIGGER IF EXISTS entities_fts_insert")
-		tx.Exec("DROP TRIGGER IF EXISTS observations_fts_insert")
-	}
 
 	// Prepare statements
 	entityStmt, err := tx.Prepare(`
@@ -323,12 +313,6 @@ func (s *SQLiteStorage) CreateEntities(entities []Entity) ([]Entity, error) {
 
 	if err = tx.Commit(); err != nil {
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	// Rebuild FTS index after bulk insertion
-	if useBulk {
-		s.createFTSSchema() // re-create triggers
-		s.rebuildFTSIndex() // populate FTS with new data
 	}
 
 	return created, nil

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -523,6 +524,155 @@ func TestFTSMigrationFromOldSchema(t *testing.T) {
 	}
 	if strings.Contains(sqlText, "content=") {
 		t.Errorf("Post-migration: observations_fts still has content-sync: %s", sqlText)
+	}
+}
+
+// TestFTSTriggerSurvival verifies that all 6 FTS triggers survive after
+// creating a batch of >20 entities (the former threshold for the removed
+// bulk optimization).
+//
+// Before fix: CreateEntities drops entities_fts_insert and
+// observations_fts_insert triggers inside the transaction, commits,
+// then recreates them outside — a crash between commit and recreation
+// leaves triggers permanently gone (issue #7).
+// After fix: triggers are never dropped; they fire per-row atomically.
+//
+// The test records each trigger's sqlite_master rowid before and after
+// the bulk create. If triggers were dropped and recreated, their rowids
+// would change — catching the drop/recreate pattern even when the end
+// state looks correct.
+func TestFTSTriggerSurvival(t *testing.T) {
+	s := newTestSQLiteStorage(t)
+
+	// All 6 FTS triggers that should exist
+	expectedTriggers := []string{
+		"entities_fts_insert",
+		"entities_fts_delete",
+		"entities_fts_update",
+		"observations_fts_insert",
+		"observations_fts_delete",
+		"observations_fts_update",
+	}
+
+	// Record trigger rowids before bulk create — if triggers are dropped
+	// and recreated, these rowids will change.
+	preRowIDs := make(map[string]int64)
+	for _, name := range expectedTriggers {
+		var rowid int64
+		err := s.db.QueryRow(
+			"SELECT rowid FROM sqlite_master WHERE type='trigger' AND name=?", name,
+		).Scan(&rowid)
+		if err != nil {
+			t.Fatalf("Pre-create: trigger %s missing: %v", name, err)
+		}
+		preRowIDs[name] = rowid
+	}
+
+	// Create >20 entities (would have triggered old bulk path)
+	entities := make([]Entity, 25)
+	for i := range entities {
+		entities[i] = Entity{
+			Name:         fmt.Sprintf("BulkEntity%d", i),
+			EntityType:   "TestType",
+			Observations: []string{fmt.Sprintf("observation for entity %d", i)},
+		}
+	}
+	if _, err := s.CreateEntities(entities); err != nil {
+		t.Fatalf("CreateEntities failed: %v", err)
+	}
+
+	// Verify ALL 6 triggers still exist AND have the same rowids
+	// (unchanged rowid proves triggers were never dropped/recreated)
+	for _, name := range expectedTriggers {
+		var rowid int64
+		err := s.db.QueryRow(
+			"SELECT rowid FROM sqlite_master WHERE type='trigger' AND name=?", name,
+		).Scan(&rowid)
+		if err != nil {
+			t.Errorf("Post-create: trigger %s is missing — crash-safety gap (issue #7): %v", name, err)
+			continue
+		}
+		if rowid != preRowIDs[name] {
+			t.Errorf("Post-create: trigger %s rowid changed (%d → %d) — trigger was dropped and recreated (issue #7)",
+				name, preRowIDs[name], rowid)
+		}
+	}
+}
+
+// TestFTSBulkCreateCorrectness verifies that FTS search returns correct
+// results after creating a batch larger than the old batchThreshold (>20).
+// Both entity name matches and observation content matches must work.
+func TestFTSBulkCreateCorrectness(t *testing.T) {
+	s := newTestSQLiteStorage(t)
+
+	// Create >20 entities with searchable observations
+	entities := make([]Entity, 25)
+	for i := range entities {
+		entities[i] = Entity{
+			Name:         fmt.Sprintf("BulkNode%d", i),
+			EntityType:   "TestType",
+			Observations: []string{fmt.Sprintf("unique searchterm%d payload", i)},
+		}
+	}
+	if _, err := s.CreateEntities(entities); err != nil {
+		t.Fatalf("CreateEntities failed: %v", err)
+	}
+
+	// Search by entity name — should find by name match
+	result, err := s.SearchNodesWithFTS("BulkNode0", 10)
+	if err != nil {
+		t.Fatalf("FTS search by name failed: %v", err)
+	}
+	if result.Total == 0 {
+		t.Fatal("Expected to find BulkNode0 by name, got 0 results")
+	}
+	found := false
+	for _, hit := range result.Entities {
+		if hit.Name == "BulkNode0" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Expected BulkNode0 in results, got: %v", result.Entities)
+	}
+
+	// Search by observation content — should find by content match
+	result, err = s.SearchNodesWithFTS("searchterm15", 10)
+	if err != nil {
+		t.Fatalf("FTS search by content failed: %v", err)
+	}
+	if result.Total == 0 {
+		t.Fatal("Expected to find BulkNode15 via observation 'searchterm15', got 0 results")
+	}
+	found = false
+	for _, hit := range result.Entities {
+		if hit.Name == "BulkNode15" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Expected BulkNode15 in results for 'searchterm15', got: %v", result.Entities)
+	}
+
+	// Verify count — all 25 entities should be in FTS
+	var entityFTSCount int
+	err = s.db.QueryRow("SELECT COUNT(*) FROM entities_fts").Scan(&entityFTSCount)
+	if err != nil {
+		t.Fatalf("Failed to count entities_fts: %v", err)
+	}
+	if entityFTSCount != 25 {
+		t.Errorf("Expected 25 rows in entities_fts, got %d", entityFTSCount)
+	}
+
+	var obsFTSCount int
+	err = s.db.QueryRow("SELECT COUNT(*) FROM observations_fts").Scan(&obsFTSCount)
+	if err != nil {
+		t.Fatalf("Failed to count observations_fts: %v", err)
+	}
+	if obsFTSCount != 25 {
+		t.Errorf("Expected 25 rows in observations_fts, got %d", obsFTSCount)
 	}
 }
 
