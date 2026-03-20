@@ -253,7 +253,9 @@ func (s *SQLiteStorage) rdb() *sql.DB {
 }
 
 // CreateEntities creates new entities in the database.
-// FTS triggers fire per-row to keep the search index in sync atomically.
+// When FTS is available, FTS triggers fire per-row to keep the search
+// index in sync atomically; otherwise only base tables are updated and
+// search falls back to the non-FTS implementation.
 func (s *SQLiteStorage) CreateEntities(entities []Entity) ([]Entity, error) {
 	if len(entities) == 0 {
 		return []Entity{}, nil

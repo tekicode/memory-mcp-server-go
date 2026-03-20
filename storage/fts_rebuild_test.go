@@ -528,13 +528,19 @@ func TestFTSMigrationFromOldSchema(t *testing.T) {
 }
 
 // TestFTSTriggerSurvival verifies that all 6 FTS triggers survive after
-// creating a batch larger than the old batchThreshold (>20 entities).
+// creating a batch of >20 entities (the former threshold for the removed
+// bulk optimization).
 //
 // Before fix: CreateEntities drops entities_fts_insert and
 // observations_fts_insert triggers inside the transaction, commits,
 // then recreates them outside — a crash between commit and recreation
 // leaves triggers permanently gone (issue #7).
 // After fix: triggers are never dropped; they fire per-row atomically.
+//
+// The test records each trigger's sqlite_master rowid before and after
+// the bulk create. If triggers were dropped and recreated, their rowids
+// would change — catching the drop/recreate pattern even when the end
+// state looks correct.
 func TestFTSTriggerSurvival(t *testing.T) {
 	s := newTestSQLiteStorage(t)
 
@@ -548,15 +554,18 @@ func TestFTSTriggerSurvival(t *testing.T) {
 		"observations_fts_update",
 	}
 
-	// Verify triggers exist before bulk create
+	// Record trigger rowids before bulk create — if triggers are dropped
+	// and recreated, these rowids will change.
+	preRowIDs := make(map[string]int64)
 	for _, name := range expectedTriggers {
-		var count int
+		var rowid int64
 		err := s.db.QueryRow(
-			"SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name=?", name,
-		).Scan(&count)
-		if err != nil || count != 1 {
-			t.Fatalf("Pre-create: trigger %s missing", name)
+			"SELECT rowid FROM sqlite_master WHERE type='trigger' AND name=?", name,
+		).Scan(&rowid)
+		if err != nil {
+			t.Fatalf("Pre-create: trigger %s missing: %v", name, err)
 		}
+		preRowIDs[name] = rowid
 	}
 
 	// Create >20 entities (would have triggered old bulk path)
@@ -572,17 +581,20 @@ func TestFTSTriggerSurvival(t *testing.T) {
 		t.Fatalf("CreateEntities failed: %v", err)
 	}
 
-	// Verify ALL 6 triggers still exist after bulk create
+	// Verify ALL 6 triggers still exist AND have the same rowids
+	// (unchanged rowid proves triggers were never dropped/recreated)
 	for _, name := range expectedTriggers {
-		var count int
+		var rowid int64
 		err := s.db.QueryRow(
-			"SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name=?", name,
-		).Scan(&count)
+			"SELECT rowid FROM sqlite_master WHERE type='trigger' AND name=?", name,
+		).Scan(&rowid)
 		if err != nil {
-			t.Fatalf("Post-create: failed to query trigger %s: %v", name, err)
+			t.Errorf("Post-create: trigger %s is missing — crash-safety gap (issue #7): %v", name, err)
+			continue
 		}
-		if count != 1 {
-			t.Errorf("Post-create: trigger %s is missing — crash-safety gap (issue #7)", name)
+		if rowid != preRowIDs[name] {
+			t.Errorf("Post-create: trigger %s rowid changed (%d → %d) — trigger was dropped and recreated (issue #7)",
+				name, preRowIDs[name], rowid)
 		}
 	}
 }
