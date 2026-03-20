@@ -3,7 +3,7 @@ module memory-mcp-server-go
 go 1.24.2
 
 require (
-	github.com/mark3labs/mcp-go v0.38.0
+	github.com/mark3labs/mcp-go v0.45.0
 	modernc.org/sqlite v1.38.2
 )
 
