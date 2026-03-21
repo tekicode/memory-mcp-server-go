@@ -222,7 +222,9 @@ func (s *SQLiteStorage) migrateSchema() error {
 	}
 	if synonymStmt != nil {
 		for _, syn := range defaultSynonyms {
-			synonymStmt.Exec(syn[0], syn[1])
+			if _, err := synonymStmt.Exec(syn[0], syn[1]); err != nil {
+				slog.Debug("synonym insert failed", "error", err, "term", syn[0])
+			}
 		}
 		synonymStmt.Close()
 	}
@@ -1056,13 +1058,15 @@ func (s *SQLiteStorage) getMatchedSnippets(entityID int64, words []string, maxSn
 
 	for rows.Next() {
 		var content string
-		if err := rows.Scan(&content); err == nil {
-			// Extract context around matched keyword
-			snippet := extractKeywordContext(content, words, contextChars)
-			snippets = append(snippets, snippet)
-			if maxSnippets > 0 && len(snippets) >= maxSnippets {
-				break
-			}
+		if err := rows.Scan(&content); err != nil {
+			slog.Debug("snippet scan failed in getMatchedSnippets", "error", err, "entityID", entityID)
+			continue
+		}
+		// Extract context around matched keyword
+		snippet := extractKeywordContext(content, words, contextChars)
+		snippets = append(snippets, snippet)
+		if maxSnippets > 0 && len(snippets) >= maxSnippets {
+			break
 		}
 	}
 
@@ -1072,11 +1076,15 @@ func (s *SQLiteStorage) getMatchedSnippets(entityID int64, words []string, maxSn
 			"SELECT content FROM observations WHERE entity_id = ? LIMIT ?",
 			entityID, 2,
 		)
-		if err == nil {
+		if err != nil {
+			slog.Debug("fallback snippets query failed in getMatchedSnippets", "error", err, "entityID", entityID)
+		} else {
 			defer fallbackRows.Close()
 			for fallbackRows.Next() {
 				var content string
-				if err := fallbackRows.Scan(&content); err == nil {
+				if err := fallbackRows.Scan(&content); err != nil {
+					slog.Debug("fallback snippet scan failed in getMatchedSnippets", "error", err, "entityID", entityID)
+				} else {
 					snippets = append(snippets, truncateString(content, contextChars*2))
 				}
 			}
