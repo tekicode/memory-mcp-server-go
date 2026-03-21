@@ -2,6 +2,7 @@ package storage
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 )
 
@@ -170,6 +171,7 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string, limit int) (*SearchResu
 		var rank float64
 
 		if err := entityRows.Scan(&id, &name, &entityType, &rank); err != nil {
+			slog.Debug("FTS entity row scan failed", "error", err)
 			continue
 		}
 
@@ -196,7 +198,9 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string, limit int) (*SearchResu
 	`
 
 	obsRows, err := s.rdb().Query(obsQuery, ftsQuery)
-	if err == nil {
+	if err != nil {
+		slog.Debug("FTS observation search query failed", "error", err)
+	} else {
 		defer obsRows.Close()
 
 		for obsRows.Next() {
@@ -205,6 +209,7 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string, limit int) (*SearchResu
 			var rank float64
 
 			if err := obsRows.Scan(&id, &name, &entityType, &rank); err != nil {
+				slog.Debug("FTS observation row scan failed", "error", err)
 				continue
 			}
 
@@ -259,7 +264,9 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string, limit int) (*SearchResu
 			GROUP BY entity_id
 		`, placeholderStr)
 		obsCountRows, err := s.rdb().Query(obsCountQuery, idArgs...)
-		if err == nil {
+		if err != nil {
+			slog.Debug("FTS observation count query failed", "error", err)
+		} else {
 			defer obsCountRows.Close()
 			for obsCountRows.Next() {
 				var entityID int64
@@ -280,7 +287,9 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string, limit int) (*SearchResu
 			GROUP BY e.id
 		`, placeholderStr)
 		relCountRows, err := s.rdb().Query(relCountQuery, idArgs...)
-		if err == nil {
+		if err != nil {
+			slog.Debug("FTS relation count query failed", "error", err)
+		} else {
 			defer relCountRows.Close()
 			for relCountRows.Next() {
 				var entityID int64
@@ -383,7 +392,9 @@ func (s *SQLiteStorage) expandQueryWithSynonyms(words []string) []string {
 
 		// Reverse lookup (expanded -> term)
 		rows, err := s.rdb().Query("SELECT term FROM synonyms WHERE expanded = ?", wordLower)
-		if err == nil {
+		if err != nil {
+			slog.Debug("synonym reverse lookup query failed", "error", err, "word", wordLower)
+		} else {
 			defer rows.Close()
 			for rows.Next() {
 				var term string
@@ -422,6 +433,7 @@ func (s *SQLiteStorage) findEntitiesBySubstring(words []string, excludeIDs map[i
 
 	rows, err := s.rdb().Query(query, args...)
 	if err != nil {
+		slog.Debug("substring entity search query failed", "error", err)
 		return nil
 	}
 	defer rows.Close()
@@ -520,7 +532,9 @@ func (s *SQLiteStorage) AnalyzeGraph() (map[string]interface{}, error) {
 	// Entity type distribution
 	entityTypes := make(map[string]int)
 	rows, err := s.rdb().Query("SELECT entity_type, COUNT(*) FROM entities GROUP BY entity_type ORDER BY COUNT(*) DESC")
-	if err == nil {
+	if err != nil {
+		slog.Debug("entity type distribution query failed", "error", err)
+	} else {
 		defer rows.Close()
 		for rows.Next() {
 			var entityType string
@@ -535,7 +549,9 @@ func (s *SQLiteStorage) AnalyzeGraph() (map[string]interface{}, error) {
 	// Relation type distribution
 	relationTypes := make(map[string]int)
 	rows, err = s.rdb().Query("SELECT relation_type, COUNT(*) FROM relations GROUP BY relation_type ORDER BY COUNT(*) DESC")
-	if err == nil {
+	if err != nil {
+		slog.Debug("relation type distribution query failed", "error", err)
+	} else {
 		defer rows.Close()
 		for rows.Next() {
 			var relationType string
@@ -560,7 +576,9 @@ func (s *SQLiteStorage) AnalyzeGraph() (map[string]interface{}, error) {
 		ORDER BY connection_count DESC
 		LIMIT 10
 	`)
-	if err == nil {
+	if err != nil {
+		slog.Debug("most connected entities query failed", "error", err)
+	} else {
 		defer rows.Close()
 		for rows.Next() {
 			var name, entityType string
@@ -604,6 +622,7 @@ func (s *SQLiteStorage) reorderByRecency(ids []int64) []int64 {
 
 	rows, err := s.rdb().Query(query, args...)
 	if err != nil {
+		slog.Debug("recency reorder query failed, using original order", "error", err)
 		return ids // fallback to original order
 	}
 	defer rows.Close()

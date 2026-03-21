@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	_ "modernc.org/sqlite"
@@ -70,16 +71,13 @@ func (s *SQLiteStorage) Initialize() error {
 
 	// Try to create FTS schema (optional, will fallback to regular search if it fails)
 	if err = s.createFTSSchema(); err != nil {
-		// Log warning but don't fail initialization
-		// Silently fallback - don't print to stdout in MCP mode
-		// FTS5 is optional, basic search will work fine
+		slog.Warn("FTS schema creation failed, falling back to basic search", "error", err)
 	} else {
 		// Populate FTS tables with any existing data.
 		// This handles both fresh databases and databases that were migrated
 		// (migrateSchema drops old content-sync observations_fts, issue #5).
 		if rebuildErr := s.rebuildFTSIndex(); rebuildErr != nil {
-			// FTS population failed — search will fallback to LIKE-based queries.
-			// Don't fail initialization since FTS is optional.
+			slog.Warn("FTS index rebuild failed, search will use LIKE-based queries", "error", rebuildErr)
 		}
 	}
 
@@ -92,13 +90,19 @@ func (s *SQLiteStorage) Initialize() error {
 
 	// Configure read connection with same pragmas (minus WAL which is db-level)
 	if s.config.CacheSize > 0 {
-		s.dbRead.Exec(fmt.Sprintf("PRAGMA cache_size=%d", s.config.CacheSize))
+		if _, err := s.dbRead.Exec(fmt.Sprintf("PRAGMA cache_size=%d", s.config.CacheSize)); err != nil {
+			slog.Warn("PRAGMA cache_size failed on read connection", "error", err)
+		}
 	}
 	if s.config.BusyTimeout > 0 {
-		s.dbRead.Exec(fmt.Sprintf("PRAGMA busy_timeout=%d", s.config.BusyTimeout.Milliseconds()))
+		if _, err := s.dbRead.Exec(fmt.Sprintf("PRAGMA busy_timeout=%d", s.config.BusyTimeout.Milliseconds())); err != nil {
+			slog.Warn("PRAGMA busy_timeout failed on read connection", "error", err)
+		}
 	}
 	// Mark read connections as query-only for safety
-	s.dbRead.Exec("PRAGMA query_only=ON")
+	if _, err := s.dbRead.Exec("PRAGMA query_only=ON"); err != nil {
+		slog.Warn("PRAGMA query_only failed on read connection", "error", err)
+	}
 
 	return nil
 }
@@ -196,10 +200,12 @@ func (s *SQLiteStorage) migrateSchema() error {
 	}
 
 	// Create synonyms table for query expansion
-	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS synonyms (
+	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS synonyms (
 		term TEXT PRIMARY KEY,
 		expanded TEXT NOT NULL
-	)`)
+	)`); err != nil {
+		slog.Debug("synonyms table creation failed", "error", err)
+	}
 
 	// Seed common tech synonyms
 	defaultSynonyms := [][2]string{
@@ -210,7 +216,10 @@ func (s *SQLiteStorage) migrateSchema() error {
 		{"db", "database"}, {"api", "interface"}, {"cli", "command"},
 		{"ui", "interface"}, {"ml", "machine learning"}, {"ai", "artificial intelligence"},
 	}
-	synonymStmt, _ := s.db.Prepare("INSERT OR IGNORE INTO synonyms (term, expanded) VALUES (?, ?)")
+	synonymStmt, err := s.db.Prepare("INSERT OR IGNORE INTO synonyms (term, expanded) VALUES (?, ?)")
+	if err != nil {
+		slog.Debug("synonym insert statement prepare failed", "error", err)
+	}
 	if synonymStmt != nil {
 		for _, syn := range defaultSynonyms {
 			synonymStmt.Exec(syn[0], syn[1])
@@ -219,7 +228,9 @@ func (s *SQLiteStorage) migrateSchema() error {
 	}
 
 	// Update schema version
-	_, _ = s.db.Exec("INSERT OR REPLACE INTO metadata (key, value) VALUES ('schema_version', '3.0')")
+	if _, err := s.db.Exec("INSERT OR REPLACE INTO metadata (key, value) VALUES ('schema_version', '3.0')"); err != nil {
+		slog.Debug("schema version update failed", "error", err)
+	}
 
 	return nil
 }
@@ -687,8 +698,7 @@ func (s *SQLiteStorage) SearchNodes(query string, limit int) (*SearchResult, err
 		if err == nil {
 			return result, nil
 		}
-		// Log FTS error but continue with basic search
-		// Silently fallback - don't print to stdout in MCP mode
+		slog.Debug("FTS search failed, falling back to basic search", "error", err, "query", query)
 	}
 
 	// Always use basic search as fallback
@@ -860,13 +870,15 @@ func (s *SQLiteStorage) searchNodesBasic(query string, limit int) (*SearchResult
 
 		// Get observations count for each entity
 		obsCountQuery := fmt.Sprintf(`
-			SELECT entity_id, COUNT(*) 
-			FROM observations 
-			WHERE entity_id IN (%s) 
+			SELECT entity_id, COUNT(*)
+			FROM observations
+			WHERE entity_id IN (%s)
 			GROUP BY entity_id
 		`, placeholderStr)
 		obsRows, err := s.rdb().Query(obsCountQuery, idArgs...)
-		if err == nil {
+		if err != nil {
+			slog.Debug("observation count query failed in searchNodesBasic", "error", err)
+		} else {
 			defer obsRows.Close()
 			for obsRows.Next() {
 				var entityID int64
@@ -888,7 +900,9 @@ func (s *SQLiteStorage) searchNodesBasic(query string, limit int) (*SearchResult
 			GROUP BY e.id
 		`, placeholderStr)
 		relRows, err := s.rdb().Query(relCountQuery, idArgs...)
-		if err == nil {
+		if err != nil {
+			slog.Debug("relation count query failed in searchNodesBasic", "error", err)
+		} else {
 			defer relRows.Close()
 			for relRows.Next() {
 				var entityID int64
@@ -1035,6 +1049,7 @@ func (s *SQLiteStorage) getMatchedSnippets(entityID int64, words []string, maxSn
 
 	rows, err := s.rdb().Query(query, args...)
 	if err != nil {
+		slog.Debug("matched snippets query failed", "error", err, "entityID", entityID)
 		return snippets
 	}
 	defer rows.Close()
@@ -1194,7 +1209,9 @@ func (s *SQLiteStorage) OpenNodes(names []string) (*KnowledgeGraph, error) {
 
 		// Get total count first
 		var totalObs int
-		s.rdb().QueryRow("SELECT COUNT(*) FROM observations WHERE entity_id = ?", id).Scan(&totalObs)
+		if err := s.rdb().QueryRow("SELECT COUNT(*) FROM observations WHERE entity_id = ?", id).Scan(&totalObs); err != nil {
+			slog.Debug("observation count query failed in OpenNodes", "error", err, "entityID", id)
+		}
 
 		// Get observations with limit
 		obsRows, err := s.rdb().Query(
@@ -1202,12 +1219,15 @@ func (s *SQLiteStorage) OpenNodes(names []string) (*KnowledgeGraph, error) {
 			id, maxObservationsPerEntity,
 		)
 		if err != nil {
+			slog.Debug("observation query failed in OpenNodes", "error", err, "entityID", id)
 			continue
 		}
 
 		for obsRows.Next() {
 			var content string
-			if err := obsRows.Scan(&content); err == nil {
+			if err := obsRows.Scan(&content); err != nil {
+				slog.Debug("observation scan failed in OpenNodes", "error", err, "entityID", id)
+			} else {
 				entity.Observations = append(entity.Observations, content)
 			}
 		}
@@ -1296,7 +1316,9 @@ func (s *SQLiteStorage) updateAccessStats(entityIDs []int64) {
 			    access_count = COALESCE(access_count, 0) + 1
 			WHERE id IN (%s)
 		`, strings.Join(placeholders, ","))
-		s.db.Exec(query, args...)
+		if _, err := s.db.Exec(query, args...); err != nil {
+			slog.Debug("access stats update failed", "error", err)
+		}
 	}()
 }
 
