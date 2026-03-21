@@ -885,11 +885,14 @@ func (s *SQLiteStorage) searchNodesBasic(query string, limit int) (*SearchResult
 			for obsRows.Next() {
 				var entityID int64
 				var count int
-				if err := obsRows.Scan(&entityID, &count); err == nil {
-					if hit, ok := entityMap[entityID]; ok {
-						hit.ObservationsCount = count
-					}
+				if err := obsRows.Scan(&entityID, &count); err != nil {
+					slog.Debug("observation count scan failed in searchNodesBasic", "error", err)
+				} else if hit, ok := entityMap[entityID]; ok {
+					hit.ObservationsCount = count
 				}
+			}
+			if err := obsRows.Err(); err != nil {
+				slog.Debug("observation count iteration error in searchNodesBasic", "error", err)
 			}
 		}
 
@@ -909,11 +912,14 @@ func (s *SQLiteStorage) searchNodesBasic(query string, limit int) (*SearchResult
 			for relRows.Next() {
 				var entityID int64
 				var count int
-				if err := relRows.Scan(&entityID, &count); err == nil {
-					if hit, ok := entityMap[entityID]; ok {
-						hit.RelationsCount = count
-					}
+				if err := relRows.Scan(&entityID, &count); err != nil {
+					slog.Debug("relation count scan failed in searchNodesBasic", "error", err)
+				} else if hit, ok := entityMap[entityID]; ok {
+					hit.RelationsCount = count
 				}
+			}
+			if err := relRows.Err(); err != nil {
+				slog.Debug("relation count iteration error in searchNodesBasic", "error", err)
 			}
 		}
 
@@ -1238,6 +1244,9 @@ func (s *SQLiteStorage) OpenNodes(names []string) (*KnowledgeGraph, error) {
 			} else {
 				entity.Observations = append(entity.Observations, content)
 			}
+		}
+		if err := obsRows.Err(); err != nil {
+			slog.Debug("observation iteration error in OpenNodes", "error", err, "entityID", id)
 		}
 		obsRows.Close()
 

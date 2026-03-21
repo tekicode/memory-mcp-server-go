@@ -186,6 +186,9 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string, limit int) (*SearchResu
 			nameMatchIDs = append(nameMatchIDs, id)
 		}
 	}
+	if err := entityRows.Err(); err != nil {
+		slog.Debug("FTS entity rows iteration error", "error", err)
+	}
 
 	// Search observations using FTS (matches in observation content)
 	obsQuery := `
@@ -224,6 +227,9 @@ func (s *SQLiteStorage) SearchNodesWithFTS(query string, limit int) (*SearchResu
 				}
 				contentMatchIDs = append(contentMatchIDs, id)
 			}
+		}
+		if err := obsRows.Err(); err != nil {
+			slog.Debug("FTS observation rows iteration error", "error", err)
 		}
 	}
 

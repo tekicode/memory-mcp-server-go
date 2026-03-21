@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -78,7 +79,7 @@ func TestLogFTSInitFailure(t *testing.T) {
 		FilePath:    filepath.Join(tempDir, "test.db"),
 		WALMode:     true,
 		CacheSize:   1000,
-		BusyTimeout: 5000,
+		BusyTimeout: 5 * time.Second,
 	}
 	store, err := NewSQLiteStorage(config)
 	if err != nil {
@@ -145,9 +146,9 @@ func TestLogFTSInitFailure(t *testing.T) {
 	}
 }
 
-// TestLogPRAGMAFailure verifies that WARN-level logs are emitted when read
-// connection PRAGMA configuration fails.
-func TestLogPRAGMAFailure(t *testing.T) {
+// TestLogPRAGMASuccess verifies that no WARN-level PRAGMA logs are emitted
+// when read connection PRAGMA configuration succeeds (no false positives).
+func TestLogPRAGMASuccess(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "log_pragma_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -165,7 +166,7 @@ func TestLogPRAGMAFailure(t *testing.T) {
 		FilePath:    filepath.Join(tempDir, "test.db"),
 		WALMode:     true,
 		CacheSize:   1000,
-		BusyTimeout: 5000,
+		BusyTimeout: 5 * time.Second,
 	}
 	store, err := NewSQLiteStorage(config)
 	if err != nil {
@@ -189,9 +190,9 @@ func TestLogPRAGMAFailure(t *testing.T) {
 	}
 }
 
-// TestLogSearchDebug verifies that DEBUG-level logs are emitted for
-// non-critical search errors (observation count, relation count queries).
-func TestLogSearchDebug(t *testing.T) {
+// TestLogSearchDebugSuccess verifies that no DEBUG-level error logs are emitted
+// during a successful search (no false positives from the logging additions).
+func TestLogSearchDebugSuccess(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "log_search_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -208,7 +209,7 @@ func TestLogSearchDebug(t *testing.T) {
 		FilePath:    filepath.Join(tempDir, "test.db"),
 		WALMode:     true,
 		CacheSize:   1000,
-		BusyTimeout: 5000,
+		BusyTimeout: 5 * time.Second,
 	}
 	store, err := NewSQLiteStorage(config)
 	if err != nil {
@@ -233,16 +234,21 @@ func TestLogSearchDebug(t *testing.T) {
 		t.Fatalf("Search failed: %v", err)
 	}
 
-	// Verify no error-level DEBUG logs emitted for successful search
+	// Verify no DEBUG-level error logs emitted for successful search.
+	// Error logs are identified by the presence of an "error" attribute
+	// or "failed" in the message, matching how production code logs errors.
 	records := handler.getRecords()
 	searchDebugErrors := 0
 	for _, r := range records {
-		if r.Level == slog.LevelDebug && strings.Contains(r.Message, "error") {
-			searchDebugErrors++
+		if r.Level == slog.LevelDebug {
+			if _, hasErr := r.Attrs["error"]; hasErr || strings.Contains(r.Message, "failed") {
+				searchDebugErrors++
+				t.Logf("  unexpected DEBUG error log: %s %v", r.Message, r.Attrs)
+			}
 		}
 	}
 	if searchDebugErrors > 0 {
-		t.Logf("Note: %d DEBUG-level error logs emitted during successful search", searchDebugErrors)
+		t.Fatalf("Expected no DEBUG-level error logs during successful search, got %d", searchDebugErrors)
 	}
 }
 
