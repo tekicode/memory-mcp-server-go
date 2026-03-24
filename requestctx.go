@@ -1,0 +1,81 @@
+package main
+
+import (
+	"context"
+	"crypto/rand"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"strings"
+)
+
+type ctxKey int
+
+const (
+	ctxKeyRequestID ctxKey = iota
+	ctxKeyClientIP
+	ctxKeyUserAgent
+)
+
+// requestCtxWrap injects request tracing metadata into the context:
+// request ID (from X-Request-ID header or generated), client IP, and User-Agent.
+func requestCtxWrap(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqID := r.Header.Get("X-Request-ID")
+		if reqID == "" {
+			reqID = generateRequestID()
+		}
+		w.Header().Set("X-Request-ID", reqID)
+
+		ctx := r.Context()
+		ctx = context.WithValue(ctx, ctxKeyRequestID, reqID)
+		ctx = context.WithValue(ctx, ctxKeyClientIP, clientIPFrom(r))
+		ctx = context.WithValue(ctx, ctxKeyUserAgent, r.Header.Get("User-Agent"))
+
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// generateRequestID produces a random 16-char hex string.
+func generateRequestID() string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return fmt.Sprintf("%x", b)
+}
+
+// clientIPFrom extracts the client IP from the request, checking
+// X-Forwarded-For, X-Real-IP, then RemoteAddr.
+func clientIPFrom(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if i := strings.IndexByte(xff, ','); i != -1 {
+			return strings.TrimSpace(xff[:i])
+		}
+		return strings.TrimSpace(xff)
+	}
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return xri
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// requestAttrs extracts request tracing metadata from context as slog attributes.
+// Returns nil if no request metadata is present (e.g., stdio transport).
+func requestAttrs(ctx context.Context) []slog.Attr {
+	reqID, _ := ctx.Value(ctxKeyRequestID).(string)
+	if reqID == "" {
+		return nil
+	}
+	attrs := []slog.Attr{slog.String("req", reqID)}
+	if ip, _ := ctx.Value(ctxKeyClientIP).(string); ip != "" {
+		attrs = append(attrs, slog.String("ip", ip))
+	}
+	if ua, _ := ctx.Value(ctxKeyUserAgent).(string); ua != "" {
+		attrs = append(attrs, slog.String("ua", ua))
+	}
+	return attrs
+}

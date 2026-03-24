@@ -1450,8 +1450,8 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 			server.WithKeepAliveInterval(30*time.Second),
 			server.WithHTTPServer(customSrv),
 		)
-		mux.Handle("/sse", corsWrap(authWrap(sseServer.SSEHandler())))
-		mux.Handle("/message", corsWrap(authWrap(sseServer.MessageHandler())))
+		mux.Handle("/sse", requestCtxWrap(corsWrap(authWrap(sseServer.SSEHandler()))))
+		mux.Handle("/message", requestCtxWrap(corsWrap(authWrap(sseServer.MessageHandler()))))
 
 		slog.Info("SSE listening", "port", port)
 		// Start in background and handle graceful shutdown
@@ -1492,7 +1492,7 @@ RETURNS: List of conflicts with entity name, both observations, and conflict typ
 		mux := http.NewServeMux()
 		customSrv := &http.Server{Handler: mux}
 		streamSrv := server.NewStreamableHTTPServer(s, append(httpOpts, server.WithStreamableHTTPServer(customSrv))...)
-		mux.Handle(httpEndpoint, corsWrap(authWrap(streamSrv)))
+		mux.Handle(httpEndpoint, requestCtxWrap(corsWrap(authWrap(streamSrv))))
 
 		slog.Info("Streamable HTTP listening", "port", port, "endpoint", httpEndpoint)
 
