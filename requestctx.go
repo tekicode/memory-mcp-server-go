@@ -81,6 +81,9 @@ func clientIPFrom(r *http.Request) string {
 	return host
 }
 
+// maxAttrLen caps logged header-sourced values to prevent log bloat.
+const maxAttrLen = 64
+
 // requestAttrs extracts request tracing metadata from context as slog attributes.
 // Returns nil if no request metadata is present (e.g., stdio transport).
 func requestAttrs(ctx context.Context) []slog.Attr {
@@ -90,10 +93,17 @@ func requestAttrs(ctx context.Context) []slog.Attr {
 	}
 	attrs := []slog.Attr{slog.String("req", reqID)}
 	if ip, _ := ctx.Value(ctxKeyClientIP).(string); ip != "" {
-		attrs = append(attrs, slog.String("ip", ip))
+		attrs = append(attrs, slog.String("ip", truncate(ip, maxAttrLen)))
 	}
 	if ua, _ := ctx.Value(ctxKeyUserAgent).(string); ua != "" {
-		attrs = append(attrs, slog.String("ua", ua))
+		attrs = append(attrs, slog.String("ua", truncate(ua, maxAttrLen)))
 	}
 	return attrs
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }

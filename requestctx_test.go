@@ -259,6 +259,28 @@ func TestRequestAttrs(t *testing.T) {
 		}
 	})
 
+	t.Run("truncates long ua", func(t *testing.T) {
+		longUA := strings.Repeat("x", 200)
+		ctx := context.Background()
+		ctx = context.WithValue(ctx, ctxKeyRequestID, "abc")
+		ctx = context.WithValue(ctx, ctxKeyUserAgent, longUA)
+
+		attrs := requestAttrs(ctx)
+		for _, a := range attrs {
+			if a.Key == "ua" {
+				got := a.Value.String()
+				if len(got) > maxAttrLen+3 { // +3 for "..."
+					t.Errorf("ua not truncated: len=%d", len(got))
+				}
+				if !strings.HasSuffix(got, "...") {
+					t.Error("truncated ua should end with ...")
+				}
+				return
+			}
+		}
+		t.Error("expected ua attr")
+	})
+
 	t.Run("omits empty ip and ua", func(t *testing.T) {
 		ctx := context.WithValue(context.Background(), ctxKeyRequestID, "abc123")
 		attrs := requestAttrs(ctx)
