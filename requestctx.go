@@ -23,7 +23,7 @@ const (
 func requestCtxWrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqID := r.Header.Get("X-Request-ID")
-		if reqID == "" {
+		if !validRequestID(reqID) {
 			reqID = generateRequestID()
 		}
 		w.Header().Set("X-Request-ID", reqID)
@@ -37,10 +37,28 @@ func requestCtxWrap(next http.Handler) http.Handler {
 	})
 }
 
+// maxRequestIDLen is the maximum length accepted for an incoming X-Request-ID.
+const maxRequestIDLen = 128
+
+// validRequestID checks that an incoming request ID is non-empty, within the
+// length limit, and contains only printable ASCII (no control chars or newlines).
+func validRequestID(id string) bool {
+	if id == "" || len(id) > maxRequestIDLen {
+		return false
+	}
+	for _, c := range id {
+		if c < 0x20 || c > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
 // generateRequestID produces a random 16-char hex string.
+// On Go 1.22+ crypto/rand.Read always returns len(p), nil (panics on failure).
 func generateRequestID() string {
 	b := make([]byte, 8)
-	rand.Read(b)
+	_, _ = rand.Read(b)
 	return fmt.Sprintf("%x", b)
 }
 
@@ -53,7 +71,7 @@ func clientIPFrom(r *http.Request) string {
 		}
 		return strings.TrimSpace(xff)
 	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
 		return xri
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)

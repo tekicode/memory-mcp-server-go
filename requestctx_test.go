@@ -41,6 +41,44 @@ func TestGenerateRequestID(t *testing.T) {
 	})
 }
 
+func TestValidRequestID(t *testing.T) {
+	t.Run("accepts normal IDs", func(t *testing.T) {
+		for _, id := range []string{"abc123", "my-trace-123", "req_2024.01.01"} {
+			if !validRequestID(id) {
+				t.Errorf("expected valid: %q", id)
+			}
+		}
+	})
+
+	t.Run("rejects empty", func(t *testing.T) {
+		if validRequestID("") {
+			t.Error("empty should be invalid")
+		}
+	})
+
+	t.Run("rejects too long", func(t *testing.T) {
+		long := strings.Repeat("a", maxRequestIDLen+1)
+		if validRequestID(long) {
+			t.Error("over-length should be invalid")
+		}
+	})
+
+	t.Run("accepts max length", func(t *testing.T) {
+		exact := strings.Repeat("a", maxRequestIDLen)
+		if !validRequestID(exact) {
+			t.Error("exact max length should be valid")
+		}
+	})
+
+	t.Run("rejects control chars", func(t *testing.T) {
+		for _, id := range []string{"abc\n123", "abc\r\n123", "abc\x00def"} {
+			if validRequestID(id) {
+				t.Errorf("should reject control chars: %q", id)
+			}
+		}
+	})
+}
+
 func TestClientIPFrom(t *testing.T) {
 	t.Run("X-Forwarded-For single", func(t *testing.T) {
 		r := httptest.NewRequest("POST", "/mcp", nil)
@@ -117,6 +155,26 @@ func TestRequestCtxWrap(t *testing.T) {
 		}
 		if rec.Header().Get("X-Request-ID") != "my-trace-123" {
 			t.Error("response header should echo the incoming X-Request-ID")
+		}
+	})
+
+	t.Run("rejects invalid X-Request-ID and generates new", func(t *testing.T) {
+		var gotID string
+		inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotID, _ = r.Context().Value(ctxKeyRequestID).(string)
+		})
+		handler := requestCtxWrap(inner)
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/mcp", nil)
+		req.Header.Set("X-Request-ID", "bad\nid")
+		handler.ServeHTTP(rec, req)
+
+		if gotID == "bad\nid" {
+			t.Error("should have rejected X-Request-ID with control chars")
+		}
+		if gotID == "" {
+			t.Error("should have generated a replacement ID")
 		}
 	})
 

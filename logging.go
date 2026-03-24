@@ -44,9 +44,14 @@ func withLogging(logger *slog.Logger, name string, handler ToolHandler) ToolHand
 			if pe, ok := toolParamExtractors[name]; ok {
 				attrs = append(attrs, pe(request.GetArguments())...)
 			}
-			// Include raw args on error for debugging
-			argsJSON, _ := json.Marshal(request.GetRawArguments())
-			attrs = append(attrs, slog.String("raw_args", string(argsJSON)))
+			// Include truncated raw args on error for debugging malformed payloads
+			if argsJSON, merr := json.Marshal(request.GetRawArguments()); merr == nil {
+				s := string(argsJSON)
+				if len(s) > 512 {
+					s = s[:512] + "..."
+				}
+				attrs = append(attrs, slog.String("raw_args", s))
+			}
 			attrs = append(attrs, slog.Duration("duration", duration), slog.Any("error", err))
 			logger.LogAttrs(ctx, slog.LevelError, name, attrs...)
 			return result, err
