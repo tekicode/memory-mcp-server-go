@@ -105,5 +105,13 @@ func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "..."
+	// Truncate at a rune boundary to avoid splitting multi-byte UTF-8.
+	cut := 0
+	for i := range s {
+		if i > n {
+			break
+		}
+		cut = i
+	}
+	return s[:cut] + "..."
 }

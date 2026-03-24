@@ -29,10 +29,11 @@ func withLogging(logger *slog.Logger, name string, handler ToolHandler) ToolHand
 
 		// DEBUG: log full request args before handler execution
 		if logger.Enabled(ctx, slog.LevelDebug) {
+			var attrs []slog.Attr
+			attrs = append(attrs, requestAttrs(ctx)...)
 			argsJSON, _ := json.Marshal(request.GetRawArguments())
-			logger.LogAttrs(ctx, slog.LevelDebug, name+".request",
-				slog.String("args", string(argsJSON)),
-			)
+			attrs = append(attrs, slog.String("args", string(argsJSON)))
+			logger.LogAttrs(ctx, slog.LevelDebug, name+".request", attrs...)
 		}
 
 		result, err := handler(ctx, request)
